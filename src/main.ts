@@ -1,14 +1,23 @@
 import { ValidationPipe, VersioningType, Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { setupSwagger } from './common/swagger';
+import { resolveCorsOrigin, resolveTrustProxy } from './config/cors.config';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+  });
+
+  // Behind nginx every request arrives from the proxy's IP. Without this the
+  // throttler buckets all customers together and logs record one address.
+  const trustProxy = resolveTrustProxy(process.env);
+  if (trustProxy > 0) app.set('trust proxy', trustProxy);
 
   app.use(helmet());
-  app.enableCors({ origin: true, credentials: true });
+  app.enableCors({ origin: resolveCorsOrigin(process.env), credentials: true });
   app.setGlobalPrefix('api');
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' }); // /api/v1
   app.useGlobalPipes(

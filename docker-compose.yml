@@ -2,17 +2,20 @@ services:
   postgres:
     image: postgres:16
     restart: unless-stopped
+    # Local development only. These come from your .env, so the database is
+    # created with exactly the credentials the app connects with — one value,
+    # not two that drift apart. `:?` fails loudly if .env is missing.
     environment:
-      POSTGRES_USER: banking
-      # Local dev only. Must match DATABASE_PASSWORD in your .env.
-      POSTGRES_PASSWORD: "1111"
-      POSTGRES_DB: banking
+      POSTGRES_USER: ${DATABASE_USER:?copy .env.example to .env first}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?copy .env.example to .env first}
+      POSTGRES_DB: ${DATABASE_NAME:?copy .env.example to .env first}
     ports:
-      - "5432:5432"
+      - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U banking -d banking"]
+      # $$ so the container's shell expands these, matching whatever .env set.
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
       interval: 5s
       timeout: 3s
       retries: 5
@@ -20,9 +23,9 @@ services:
     image: redis:7
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - '6379:6379'
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
       timeout: 3s
       retries: 5

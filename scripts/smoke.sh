@@ -9,6 +9,8 @@
 set -euo pipefail
 
 BASE="${BASE:-http://localhost:3000/api/v1}"
+DBUSER="${DBUSER:-banking}"   # override when the stack uses other credentials
+DBNAME="${DBNAME:-banking}"
 PASSWORD='S0me-Strong-Passphrase'
 EMAIL="smoke-$(date +%s)@bank.test"
 
@@ -23,12 +25,19 @@ json() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 # Matching on the name alone picks the wrong container the moment a second
 # postgres exists (a stale compose container, say), and then this script seeds
 # one database while the API reads another.
-PG=$(docker ps --format '{{.Names}}\t{{.Ports}}' \
-     | grep -i postgres | grep -F ':5432->' | head -1 | cut -f1)
-[ -n "$PG" ] || fail "no postgres container is publishing port 5432 — try: docker compose up -d"
+#
+# The production stack publishes no postgres port at all, so name it directly:
+#   PG=banking-api-postgres-1 BASE=https://api.yourbank.example/api/v1 ./scripts/smoke.sh
+if [ -z "${PG:-}" ]; then
+  PG=$(docker ps --format '{{.Names}}\t{{.Ports}}' \
+       | grep -i postgres | grep -F ':5432->' | head -1 | cut -f1)
+  [ -n "$PG" ] || fail "no postgres container publishes 5432 — try 'docker compose up -d', or set PG=<container>"
 
-if [ "$(docker ps --format '{{.Names}}\t{{.Ports}}' | grep -ci 'postgres')" -gt 1 ]; then
-  printf '  \033[33m!\033[0m more than one postgres container is running; using %s\n' "$PG"
+  if [ "$(docker ps --format '{{.Names}}\t{{.Ports}}' | grep -ci 'postgres')" -gt 1 ]; then
+    printf '  \033[33m!\033[0m more than one postgres container is running; using %s\n' "$PG"
+  fi
+else
+  docker ps --format '{{.Names}}' | grep -qx "$PG" || fail "container '$PG' is not running"
 fi
 
 step "0. API reachable?"
@@ -43,9 +52,9 @@ ACCESS=$(echo "$TOKENS" | json "d['accessToken']")
 pass "registered $EMAIL"
 
 step "2. Seed a customer profile + two accounts (no admin endpoint yet)"
-USER_ID=$(docker exec "$PG" psql -U banking -d banking -tAc \
+USER_ID=$(docker exec "$PG" psql -U "$DBUSER" -d "$DBNAME" -tAc \
   "select id from users where email='$EMAIL'")
-docker exec -i "$PG" psql -U banking -d banking -q <<SQL
+docker exec -i "$PG" psql -U "$DBUSER" -d "$DBNAME" -q <<SQL
 insert into customers (id, user_id, "fullName", status, created_at)
 values (gen_random_uuid(), '$USER_ID', 'Smoke Test Customer', 'ACTIVE', now());
 
@@ -117,7 +126,7 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/transfers" \
 pass "404 — ownership is enforced in the query"
 
 step "10. Double-entry ledger balances to zero"
-docker exec "$PG" psql -U banking -d banking -tAc \
+docker exec "$PG" psql -U "$DBUSER" -d "$DBNAME" -tAc \
   "select coalesce(sum(case when type='DEBIT' then amount else -amount end),0) from ledger_entries" \
   | tr -d ' ' | grep -q '^0' \
   && pass "debits and credits net to zero" \

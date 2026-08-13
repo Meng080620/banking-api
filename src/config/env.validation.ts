@@ -23,4 +23,13 @@ export const envValidationSchema = Joi.object({
 
   // Points at the bundled mock in development; the bank's real gateway elsewhere.
   MIDDLEWARE_URL: Joi.string().uri().default('http://localhost:3000/api/v1'),
+
+  // Browser front-ends allowed to call this API, comma-separated. Empty in
+  // production means "browsers cannot"; mobile apps send no Origin and are
+  // unaffected. See src/config/cors.config.ts.
+  CORS_ORIGINS: Joi.string().allow('').default(''),
+
+  // Reverse-proxy hops in front of the app: 0 when exposed directly, 1 behind
+  // a single nginx. Getting this wrong breaks per-client rate limiting.
+  TRUST_PROXY: Joi.number().integer().min(0).default(0),
 });

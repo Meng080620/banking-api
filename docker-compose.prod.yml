@@ -1,0 +1,101 @@
+# Production stack: the API image itself, plus its datastores.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Differences from docker-compose.yml (local development: databases only, app
+# runs on the host with hot reload):
+#   - the API runs as a container built from the Dockerfile
+#   - migrations run to completion in their own container before the API starts
+#   - Postgres and Redis publish NO host ports — only the API can reach them
+#   - the API binds 127.0.0.1 only; nginx/Caddy terminates TLS in front of it
+#
+# Every service reads .env.production. Nothing is interpolated from the shell,
+# so what you see in that one file is exactly what the stack runs with.
+name: banking-api
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB come from .env.production
+    # and must match the DATABASE_* values the API connects with.
+    env_file: .env.production
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # $$ escapes compose interpolation, so the container's own shell expands
+      # these against the env_file values.
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    # Queued notification jobs survive a restart instead of vanishing.
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Runs once and exits. The API waits for it to succeed, so a deploy whose
+  # migration fails leaves the OLD container serving traffic rather than
+  # starting a new one against a half-migrated schema.
+  migrate:
+    build: .
+    image: banking-api:latest
+    env_file: .env.production
+    command: ['npm', 'run', 'migration:run:prod']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    build: .
+    image: banking-api:latest
+    restart: unless-stopped
+    env_file: .env.production
+    # Loopback only. Anything reaching this port has already passed through the
+    # reverse proxy, which is what terminates TLS. Keep the container side at
+    # 3000 — that is what the image's PORT default and healthcheck expect.
+    ports:
+      - '127.0.0.1:3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # /health/live, not /health/ready: a container is unhealthy when its own
+      # process is broken, not when a dependency is briefly down. Restarting
+      # the API does not fix a dead database, it just adds an outage to one.
+      test:
+        [
+          'CMD',
+          'wget',
+          '--quiet',
+          '--tries=1',
+          '--spider',
+          'http://127.0.0.1:3000/api/v1/health/live',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+volumes:
+  postgres_data:
+  redis_data:

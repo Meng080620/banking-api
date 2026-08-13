@@ -29,7 +29,9 @@ below — it explains every folder in terms of what it does to a request.
 - [ ] **Create the tables** — `npm run migration:run` ([§2](#2-setup--five-commands))
 - [ ] **Run it** — `npm run start:dev`, then open http://localhost:3000/docs ([§3](#3-run-it))
 - [ ] **Prove it works** — `./scripts/smoke.sh` in a second terminal ([§3](#prove-it-all-works-in-one-command))
-- [ ] **Make the first commit** — this repo has no history yet ([§8](#version-control))
+
+Putting it on a server instead? That's [§10 Deploy to a server](#10-deploy-to-a-server) —
+one compose file, one env file, one command.
 
 Hitting an error? Jump straight to [§9 When something breaks](#9-when-something-breaks).
 
@@ -282,20 +284,20 @@ different details is a client bug the server refuses to paper over.
 All of these were checked against a running instance — the status codes below
 are observed, not assumed:
 
-| Try this | Get | Why |
-|---|---|---|
-| Any `/accounts` call with no `Authorization` header | **401** | `JwtAuthGuard` |
-| Someone else's account id | **404** (not 403) | 403 would confirm the account exists |
-| `/accounts/not-a-uuid` | **400** | `ParseUUIDPipe` rejects it before your code runs |
-| `POST /transfers` with no `Idempotency-Key` | **400** | a retry would double-debit |
-| `"amount": 150` (a number, not a string) | **400** | the DTO requires a decimal string |
-| Extra field like `"role":"admin"` | **400** | unknown fields are rejected, not ignored |
-| Transfer more than the balance | **422** | `INSUFFICIENT_BALANCE` |
-| `sourceId` == `destId` | **400** | one row, two writes — it would invent money |
-| `"amount": "0"` | **400** | passes the format regex, must not reach the ledger |
-| Two concurrent transfers that don't both fit | one **201**, one **422** | the loser sees the real balance after a retry |
-| Same key, different amount | **422** | the body hash catches key reuse |
-| 6th login in a minute | **429** | rate limit — note that *failed* attempts count too |
+| Try this                                            | Get                      | Why                                                |
+| --------------------------------------------------- | ------------------------ | -------------------------------------------------- |
+| Any `/accounts` call with no `Authorization` header | **401**                  | `JwtAuthGuard`                                     |
+| Someone else's account id                           | **404** (not 403)        | 403 would confirm the account exists               |
+| `/accounts/not-a-uuid`                              | **400**                  | `ParseUUIDPipe` rejects it before your code runs   |
+| `POST /transfers` with no `Idempotency-Key`         | **400**                  | a retry would double-debit                         |
+| `"amount": 150` (a number, not a string)            | **400**                  | the DTO requires a decimal string                  |
+| Extra field like `"role":"admin"`                   | **400**                  | unknown fields are rejected, not ignored           |
+| Transfer more than the balance                      | **422**                  | `INSUFFICIENT_BALANCE`                             |
+| `sourceId` == `destId`                              | **400**                  | one row, two writes — it would invent money        |
+| `"amount": "0"`                                     | **400**                  | passes the format regex, must not reach the ledger |
+| Two concurrent transfers that don't both fit        | one **201**, one **422** | the loser sees the real balance after a retry      |
+| Same key, different amount                          | **422**                  | the body hash catches key reuse                    |
+| 6th login in a minute                               | **429**                  | rate limit — note that _failed_ attempts count too |
 
 Every failure comes back in the same envelope:
 
@@ -324,7 +326,7 @@ curl http://localhost:3000/api/v1/health/ready
 Two endpoints, two different questions, and mixing them up causes outages:
 
 - **live** — "is the process alive?" If this fails, Kubernetes should **restart** it.
-- **ready** — "can it reach Postgres *and* Redis?" If this fails, stop **sending
+- **ready** — "can it reach Postgres _and_ Redis?" If this fails, stop **sending
   traffic** but do _not_ restart — restarting won't fix a database that's down,
   it just turns a slow dependency into a crash loop.
 
@@ -473,34 +475,33 @@ That's double-entry bookkeeping, and it's how you detect corruption.
 | `./scripts/smoke.sh`                                         | full end-to-end check against a running API               |
 | `docker compose up -d` / `down`                              | start / stop Postgres + Redis                             |
 
+On a server ([§10](#10-deploy-to-a-server)):
+
+| Command                                                   | What it does                                                                      |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `./scripts/preflight.sh`                                  | validate `.env.production` before deploying                                       |
+| `docker compose -f docker-compose.prod.yml up -d --build` | deploy or update the whole stack                                                  |
+| `npm run migration:run:prod`                              | apply migrations from compiled `dist/` — no ts-node, so it works inside the image |
+| `npm run migration:show:prod`                             | which migrations have run                                                         |
+| `npm run migration:revert:prod`                           | undo the last one                                                                 |
+
 ### Version control
 
-This repo has **no commits yet** — nothing you or I have done is recoverable
-through git. Make a baseline now:
+The repo is on GitHub at
+[Meng080620/banking-api](https://github.com/Meng080620/banking-api), and every
+push runs [the CI workflow](.github/workflows/ci.yml): typecheck, lint,
+migrations, unit tests, e2e. **Do not push on a red `npm run verify`** — CI
+runs the same commands on a clean machine and will catch it anyway.
+
+Secrets must never enter a commit. `.env` and `.env.production` are gitignored;
+only the `*.example` templates are tracked. Check before pushing:
 
 ```bash
-git add -A && git commit -m "Baseline: NestJS banking API with auth, accounts, transfers"
+git ls-files | grep -c '^\.env$\|^\.env\.production$'
 ```
 
-`.env` is gitignored and will not be committed; `.env.example` will. Verify
-before you push:
-
-```bash
-git ls-files | grep -c '^\.env$'
-```
-
-That must print `0`. A committed `.env` means rotating every secret in it.
-
-One thing to decide first: that commit is **163 files, and 89 of them are
-editor and AI-assistant config** under `.agents/`, `.claude/` and `.windsurf/` —
-mostly Prisma documentation, which this project doesn't use (it uses TypeORM).
-If this repo is going on GitHub for someone to review, keep it to your own work:
-
-```bash
-printf '\n# Editor / assistant config\n.agents/\n.claude/\n.windsurf/\nskills-lock.json\n' >> .gitignore
-```
-
-Skip that if you want those settings synced across your machines.
+That must print `0`. A committed `.env` means rotating every secret in it —
+including `JWT_SECRET`, which logs out every customer.
 
 ### Changing the database
 
@@ -529,6 +530,18 @@ guesses "drop this column".
 | 400 with `should not exist`               | you sent an extra field   | unknown fields are rejected on purpose        |
 | e2e hangs then fails                      | Redis not running         | `docker compose up -d`                        |
 | `MIDDLEWARE_UNAVAILABLE`                  | mock upstream unreachable | `MIDDLEWARE_URL` must end in `/api/v1`        |
+
+On a server ([§10](#10-deploy-to-a-server)):
+
+| Symptom                                        | Cause                                                                          | Fix                                                      |
+| ---------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| `api` container never starts, no error         | `migrate` exited non-zero, so compose refused to start it                      | `docker compose -f docker-compose.prod.yml logs migrate` |
+| `migrate` fails with `password authentication` | `POSTGRES_PASSWORD` ≠ `DATABASE_PASSWORD`                                      | `./scripts/preflight.sh`                                 |
+| `ECONNREFUSED 127.0.0.1:5432` in a container   | `DATABASE_HOST=localhost` — inside a container that means the container itself | set `DATABASE_HOST=postgres`                             |
+| `MIDDLEWARE_UNAVAILABLE` in production only    | the mock upstream is excluded from production images on purpose                | point `MIDDLEWARE_URL` at the bank's real gateway        |
+| Browser calls blocked, mobile app fine         | the front-end's origin isn't in `CORS_ORIGINS` (native apps send no `Origin`)  | add it, then `up -d`                                     |
+| One customer's traffic rate-limits everyone    | `TRUST_PROXY=0` behind a proxy, so every request looks like one IP             | `TRUST_PROXY=1` and set `X-Forwarded-For` in nginx       |
+| `502` from nginx/Caddy                         | the API container is down or still booting                                     | `docker compose -f docker-compose.prod.yml ps`           |
 
 ### `docker compose up -d` says the port is already allocated
 
@@ -561,7 +574,300 @@ Read the logs by `requestId` — every line of one request shares the same id.
 
 ---
 
-## 10. Where to go next
+## 10. Deploy to a server
+
+Everything above runs the app on your laptop, with Postgres and Redis in
+containers. This section runs **the app itself in a container too**, on a
+server, behind HTTPS.
+
+```
+        Internet
+           │  HTTPS :443
+           ▼
+   ┌───────────────────┐
+   │  Caddy / nginx    │   TLS terminates here
+   └─────────┬─────────┘
+             │  HTTP 127.0.0.1:3000
+   ┌─────────▼─────────┐
+   │  api container    │◄── migrate container runs first, then exits
+   └─────┬───────┬─────┘
+         │       │        no published ports — reachable only from the api
+   ┌─────▼──┐ ┌──▼─────┐
+   │postgres│ │ redis  │
+   └────────┘ └────────┘
+```
+
+Three files drive this:
+
+| File                      | What it is                                                                        |
+| ------------------------- | --------------------------------------------------------------------------------- |
+| `Dockerfile`              | builds the image: compile, then a runtime stage with production dependencies only |
+| `docker-compose.prod.yml` | the four services above                                                           |
+| `.env.production.example` | the template for the one env file the stack reads                                 |
+
+### 10.1 What you need
+
+- A Linux server — 2 GB RAM is enough for this stack. Ubuntu 24.04 assumed below.
+- A domain name pointing at its IP (an `A` record).
+- Docker Engine with the compose plugin.
+
+```bash
+curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER
+```
+
+Log out and back in so the group takes effect, then `docker compose version`
+must print something. Only three ports need to be open — Postgres and Redis
+publish none, so they are unreachable from the internet no matter what your
+firewall says:
+
+```bash
+sudo ufw allow 22,80,443/tcp && sudo ufw enable
+```
+
+### 10.2 Get the code and write the env file
+
+```bash
+git clone https://github.com/Meng080620/banking-api.git && cd banking-api
+```
+
+```bash
+cp .env.production.example .env.production && chmod 600 .env.production
+```
+
+Now edit `.env.production`. Four values matter more than the rest:
+
+| Variable         | Get it wrong and…                                                                                                                           |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `JWT_SECRET`     | under 32 chars, the app refuses to boot. `openssl rand -hex 32`                                                                             |
+| `MIDDLEWARE_URL` | the bundled mock **does not ship in a production image** — point this at the bank's real gateway or every balance read fails                |
+| `CORS_ORIGINS`   | your web front-end gets blocked by the browser. Mobile apps send no `Origin` and don't care                                                 |
+| `TRUST_PROXY`    | `1` behind one reverse proxy. Leave it `0` and every customer shares a single rate-limit bucket, so one of them can lock out all the others |
+
+`DATABASE_PASSWORD` and `POSTGRES_PASSWORD` are the same secret seen from two
+sides: the first is what the API logs in with, the second is what Postgres
+creates the role with. This check catches that and the rest before you deploy:
+
+```bash
+./scripts/preflight.sh
+```
+
+### 10.3 Start it
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+That is the whole deploy. In order, compose:
+
+1. starts Postgres and Redis and **waits until their healthchecks pass**;
+2. runs `migrate`, a throwaway container that applies migrations and exits;
+3. starts `api` only if `migrate` exited `0`.
+
+Step 3 is the important one. A failed migration leaves the old container
+serving traffic instead of starting a new one against a half-migrated schema —
+`condition: service_completed_successfully` in the compose file is what buys
+that.
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+```
+
+```
+api        Up 30 seconds (healthy)   127.0.0.1:3000->3000/tcp
+migrate    Exited (0)
+postgres   Up 40 seconds (healthy)
+redis      Up 40 seconds (healthy)
+```
+
+`migrate` showing `Exited (0)` is success, not failure — it has one job and
+it's done. The API listens on **loopback only**: `curl` works on the server,
+nothing from outside reaches it until you put a proxy in front.
+
+### 10.4 HTTPS
+
+Use **Caddy** unless something forces you not to. It fetches and renews the
+certificate itself; there is no certbot cron to forget.
+
+```bash
+sudo apt install -y caddy
+```
+
+`/etc/caddy/Caddyfile` — the whole file:
+
+```
+api.yourbank.example {
+    reverse_proxy 127.0.0.1:3000
+}
+```
+
+```bash
+sudo systemctl reload caddy
+```
+
+If your infrastructure standardises on nginx, `/etc/nginx/sites-available/banking-api`:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name api.yourbank.example;
+
+    ssl_certificate     /etc/letsencrypt/live/api.yourbank.example/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.yourbank.example/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        # Without this header the app cannot tell customers apart: TRUST_PROXY=1
+        # makes it read the client IP from here.
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Either way, TLS stops at the proxy and plain HTTP travels the loopback
+interface to the container — never over a network.
+
+### 10.5 Check the deploy actually worked
+
+```bash
+curl https://api.yourbank.example/api/v1/health/ready
+```
+
+```json
+{
+  "status": "ok",
+  "info": { "database": { "status": "up" }, "redis": { "status": "up" } }
+}
+```
+
+Two more things worth confirming by hand the first time:
+
+```bash
+curl -o /dev/null -w '%{http_code}\n' https://api.yourbank.example/docs
+```
+
+`404` — Swagger is dev/staging only. A public API that publishes its own
+schema is handing an attacker the map.
+
+```bash
+curl -si -X OPTIONS https://api.yourbank.example/api/v1/accounts \
+  -H 'Origin: https://not-your-site.example' \
+  -H 'Access-Control-Request-Method: GET' | grep -i access-control-allow-origin
+```
+
+No output — an origin you didn't list gets no `Access-Control-Allow-Origin`
+header, so a browser refuses the response.
+
+**Do not run `./scripts/smoke.sh` against production.** It registers users and
+moves money. Run it against a staging stack: the same compose file with
+`NODE_ENV=staging` (which re-enables the bundled mock upstream) and
+`MIDDLEWARE_URL=http://127.0.0.1:3000/api/v1`. Because the production stack
+publishes no Postgres port, name the container explicitly:
+
+```bash
+PG=banking-api-postgres-1 BASE=https://staging.yourbank.example/api/v1 ./scripts/smoke.sh
+```
+
+### 10.6 Deploying an update
+
+```bash
+git pull && docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Same command as the first deploy — compose rebuilds, re-runs `migrate` (it
+prints `No migrations are pending` and exits `0` when there's nothing to do)
+and replaces the API container.
+
+There is a **few seconds of downtime** while the old container stops and the
+new one boots. That is honest for one server, and it's the first thing to fix
+when it stops being acceptable: run two API containers and have the proxy drain
+one before it restarts.
+
+Write migrations so the old and new code can both run against the schema for
+those few seconds — add a column, deploy, backfill, then stop reading the old
+one in a later deploy. A migration that renames or drops a column in one step
+breaks whichever version is running on the other side of the swap.
+
+Rolling back:
+
+```bash
+docker compose -f docker-compose.prod.yml exec api npm run migration:revert:prod
+```
+
+```bash
+git checkout <previous-tag> && docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Revert the migration **before** the code if the new migration is what broke.
+
+### 10.7 Backups
+
+An untested backup is not a backup. Take one:
+
+```bash
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  pg_dump -U banking banking | gzip > backup-$(date +%F).sql.gz
+```
+
+Restore it into a scratch database **today**, not on the day you need it:
+
+```bash
+gunzip -c backup-2026-08-13.sql.gz | \
+  docker compose -f docker-compose.prod.yml exec -T postgres psql -U banking banking
+```
+
+Nightly, via `crontab -e`:
+
+```
+0 2 * * * cd /home/USER/banking-api && docker compose -f docker-compose.prod.yml exec -T postgres pg_dump -U banking banking | gzip > /var/backups/banking-$(date +\%F).sql.gz
+```
+
+Copy them off the server. A backup on the same disk as the database survives a
+dropped table and nothing else.
+
+### 10.8 Watching it run
+
+| Question                      | Command                                                                |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| Is it up?                     | `curl -s .../api/v1/health/live` — the process only                    |
+| Are its dependencies up?      | `curl -s .../api/v1/health/ready` — `503` if Postgres or Redis is down |
+| What is it doing?             | `docker compose -f docker-compose.prod.yml logs -f api`                |
+| What happened to one request? | `... logs api \| grep <requestId>`                                     |
+| Did a container restart?      | `docker compose -f docker-compose.prod.yml ps`                         |
+
+Point an uptime monitor (UptimeRobot, Better Stack — free tiers are fine) at
+`/api/v1/health/ready` every minute. That is the difference between hearing
+about an outage from your monitor and hearing about it from a customer.
+
+Logs are capped at 5 × 10 MB per container in the compose file, so they cannot
+fill the disk — a full disk takes Postgres down with it.
+
+### 10.9 What this setup does not give you
+
+Worth saying out loud, because in an interview the gaps are the interesting
+part:
+
+- **One server, so one failure.** No HA, no failover. Postgres dies, the API is
+  down. Two API containers plus managed Postgres is the next step.
+- **Secrets sit in a file on disk.** Fine at this size; a real bank uses a
+  secret manager and rotates automatically.
+- **Deploys have a downtime gap** (§10.6).
+- **Logs stay on the box.** Debugging one customer's failed transfer means SSH.
+  Ship them somewhere searchable before the second server exists.
+- **Nothing is watching the queue.** If the notifications worker stalls, jobs
+  pile up in Redis silently — `/health/ready` says Redis is _reachable_, not
+  that the backlog is sane.
+
+At 10× traffic the first thing to break is not the app — it's the single
+Postgres accepting every `SERIALIZABLE` transfer transaction. Read replicas
+don't help, because transfers write. You shard by account, or you queue
+transfers and process them at a bounded rate.
+
+---
+
+## 11. Where to go next
 
 - **[docs/TESTING.md](docs/TESTING.md)** — how the tests work, how to write one
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — design decisions and how this breaks at 10x load
